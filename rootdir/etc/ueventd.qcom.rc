@@ -144,4 +144,7 @@
 /dev/akm8963_dev          0660  system       system
 
 # keystore
-/dev/qseecom              0660  system       drmrpc
+/dev/qseecom    
+          0660  system       drmrpc
+# Fingerprint
+/dev/vfsspi               0660  system       system

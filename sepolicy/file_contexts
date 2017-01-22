@@ -22,6 +22,11 @@
 # CMHW
 /sys/devices/virtual/timed_output/vibrator/voltage_level   u:object_r:vibeamp_sysfs:s0
 
+# Fingerprint
+/data/validity(/.*)?            u:object_r:vcs_data_file:s0
+/dev/validity(/.*)?             u:object_r:vcs_device:s0
+/dev/vfsspi                     u:object_r:vcs_device:s0
+
 # Graphics
 /sys/devices/platform/kgsl-3d0\.0/kgsl/kgsl-3d0/gpuclk       u:object_r:sysfs_thermal:s0
 /sys/devices/platform/kgsl-3d0\.0/kgsl/kgsl-3d0/max_gpuclk   u:object_r:sysfs_thermal:s0
