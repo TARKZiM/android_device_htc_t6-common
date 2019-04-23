@@ -267,25 +267,28 @@ status_t GraphicBuffer::flatten(void*& buffer, size_t& size, int*& fds, size_t& 
     if (count < fdCountNeeded) return NO_MEMORY;
 
     int32_t* buf = static_cast<int32_t*>(buffer);
-    buf[0] = 'GBFR';
+    buf[0] = 'GB01';
     buf[1] = width;
     buf[2] = height;
     buf[3] = stride;
     buf[4] = format;
-    buf[5] = usage;
-    buf[6] = static_cast<int32_t>(mId >> 32);
-    buf[7] = static_cast<int32_t>(mId & 0xFFFFFFFFull);
-    buf[8] = 0;
+    buf[5] = static_cast<int32_t>(layerCount);
+    buf[6] = int(usage); // low 32-bits
+    buf[7] = static_cast<int32_t>(mId >> 32);
+    buf[8] = static_cast<int32_t>(mId & 0xFFFFFFFFull);
     buf[9] = 0;
+    buf[10] = 0;
+    buf[11] = 0;
+    buf[12] = int(usage >> 32); // high 32-bits
 
     if (handle) {
-        buf[8] = handle->numFds;
-        buf[9] = handle->numInts;
+        buf[10] = handle->numFds;
+        buf[11] = handle->numInts;
         native_handle_t const* const h = handle;
         memcpy(fds, handle->data,
-                static_cast<size_t>(handle->numFds) * sizeof(int));
+               static_cast<size_t>(handle->numFds) * sizeof(int));
         memcpy(&buf[10], handle->data + handle->numFds,
-                static_cast<size_t>(handle->numInts) * sizeof(int));
+               static_cast<size_t>(handle->numInts) * sizeof(int));
     }
 
     buffer = static_cast<void*>(static_cast<int*>(buffer) + sizeNeeded);
@@ -302,8 +305,17 @@ status_t GraphicBuffer::unflatten(
         void const*& buffer, size_t& size, int const*& fds, size_t& count) {
     if (size < 8*sizeof(int)) return NO_MEMORY;
 
+    uint32_t flattenWordCount = 0;
     int const* buf = static_cast<int const*>(buffer);
-    if (buf[0] != 'GBFR') return BAD_TYPE;
+    if (buf[0] == 'GB01') {
+        // new version with 64-bits usage bits
+        flattenWordCount = 13;
+    } else if (buf[0] == 'GBFR') {
+        // old version, when usage bits were 32-bits
+        flattenWordCount = 12;
+    } else {
+        return BAD_TYPE;
+    }
 
     const size_t numFds  = static_cast<size_t>(buf[8]);
     const size_t numInts = static_cast<size_t>(buf[9]);
@@ -313,7 +325,7 @@ status_t GraphicBuffer::unflatten(
     // chosen to be high enough to not cause issues and low enough to prevent
     // overflow problems.
     const size_t maxNumber = 4096;
-    if (numFds >= maxNumber || numInts >= (maxNumber - 10)) {
+    if (numFds >= maxNumber || numInts >= (maxNumber - flattenWordCount)) {
         width = height = stride = format = usage = 0;
         handle = NULL;
         ALOGE("unflatten: numFds or numInts is too large: %d, %d",
@@ -321,7 +333,7 @@ status_t GraphicBuffer::unflatten(
         return BAD_VALUE;
     }
 
-    const size_t sizeNeeded = (10 + numInts) * sizeof(int);
+    const size_t sizeNeeded = (flattenWordCount + numInts) * sizeof(int);
     if (size < sizeNeeded) return NO_MEMORY;
 
     size_t fdCountNeeded = numFds;
@@ -337,7 +349,13 @@ status_t GraphicBuffer::unflatten(
         height = buf[2];
         stride = buf[3];
         format = buf[4];
-        usage  = buf[5];
+        layerCount = static_cast<uintptr_t>(buf[5]);
+        usage_deprecated = buf[6];
+        if (flattenWordCount == 13) {
+            usage = (uint64_t(buf[12]) << 32) | uint32_t(buf[6]);
+        } else {
+            usage = uint64_t(usage_deprecated);
+        }
         native_handle* h = native_handle_create(static_cast<int>(numFds), static_cast<int>(numInts));
         if (!h) {
             width = height = stride = format = usage = 0;
@@ -346,7 +364,7 @@ status_t GraphicBuffer::unflatten(
             return NO_MEMORY;
         }
         memcpy(h->data,          fds,     numFds*sizeof(int));
-        memcpy(h->data + numFds, &buf[10], numInts*sizeof(int));
+        memcpy(h->data + numFds, buf + flattenWordCount, numInts * sizeof(int));
         handle = h;
     } else {
         width = height = stride = format = usage = 0;
