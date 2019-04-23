@@ -259,118 +259,123 @@ size_t GraphicBuffer::getFdCount() const {
     return static_cast<size_t>(handle ? handle->numFds : 0);
 }
 
-    status_t GraphicBuffer::flatten(void*& buffer, size_t& size, int*& fds, size_t& count) const {
-        size_t sizeNeeded = GraphicBuffer::getFlattenedSize();
-        if (size < sizeNeeded) return NO_MEMORY;
-        
-        size_t fdCountNeeded = GraphicBuffer::getFdCount();
-        if (count < fdCountNeeded) return NO_MEMORY;
-        
-        int* buf = static_cast<int*>(buffer);
-        buf[0] = 'GBFR';
-        buf[1] = width;
-        buf[2] = height;
-        buf[3] = stride;
-        buf[4] = format;
-        buf[5] = usage;
-        buf[6] = 0;
-        buf[7] = 0;
-        
-        if (handle) {
-            buf[6] = handle->numFds;
-            buf[7] = handle->numInts;
-            memcpy(fds, handle->data,
-                   static_cast<size_t>(handle->numFds) * sizeof(int));
-            memcpy(&buf[8], handle->data + handle->numFds,
-                   static_cast<size_t>(handle->numInts) * sizeof(int));
-        }
-        
-        buffer = static_cast<void*>(static_cast<int*>(buffer) + sizeNeeded);
-        size -= sizeNeeded;
-        if (handle) {
-            fds += handle->numFds;
-            count -= static_cast<size_t>(handle->numFds);
-        }
-        
-        return NO_ERROR;
+status_t GraphicBuffer::flatten(void*& buffer, size_t& size, int*& fds, size_t& count) const {
+    size_t sizeNeeded = GraphicBuffer::getFlattenedSize();
+    if (size < sizeNeeded) return NO_MEMORY;
+
+    size_t fdCountNeeded = GraphicBuffer::getFdCount();
+    if (count < fdCountNeeded) return NO_MEMORY;
+
+    int32_t* buf = static_cast<int32_t*>(buffer);
+    buf[0] = 'GBFR';
+    buf[1] = width;
+    buf[2] = height;
+    buf[3] = stride;
+    buf[4] = format;
+    buf[5] = usage;
+    buf[6] = static_cast<int32_t>(mId >> 32);
+    buf[7] = static_cast<int32_t>(mId & 0xFFFFFFFFull);
+    buf[8] = 0;
+    buf[9] = 0;
+
+    if (handle) {
+        buf[8] = handle->numFds;
+        buf[9] = handle->numInts;
+        native_handle_t const* const h = handle;
+        memcpy(fds, handle->data,
+                static_cast<size_t>(handle->numFds) * sizeof(int));
+        memcpy(&buf[10], handle->data + handle->numFds,
+                static_cast<size_t>(handle->numInts) * sizeof(int));
     }
-    
-    status_t GraphicBuffer::unflatten(
-                                      void const*& buffer, size_t& size, int const*& fds, size_t& count) {
-        if (size < 8 * sizeof(int)) return NO_MEMORY;
-        
-        int const* buf = static_cast<int const*>(buffer);
-        if (buf[0] != 'GBFR') return BAD_TYPE;
-        
-        const size_t numFds  = static_cast<size_t>(buf[6]);
-        const size_t numInts = static_cast<size_t>(buf[7]);
-        
-        // Limit the maxNumber to be relatively small. The number of fds or ints
-        // should not come close to this number, and the number itself was simply
-        // chosen to be high enough to not cause issues and low enough to prevent
-        // overflow problems.
-        const size_t maxNumber = 4096;
-        if (numFds >= maxNumber || numInts >= (maxNumber - 10)) {
+
+    buffer = static_cast<void*>(static_cast<int*>(buffer) + sizeNeeded);
+    size -= sizeNeeded;
+    if (handle) {
+        fds += handle->numFds;
+        count -= static_cast<size_t>(handle->numFds);
+    }
+
+    return NO_ERROR;
+}
+
+status_t GraphicBuffer::unflatten(
+        void const*& buffer, size_t& size, int const*& fds, size_t& count) {
+    if (size < 8*sizeof(int)) return NO_MEMORY;
+
+    int const* buf = static_cast<int const*>(buffer);
+    if (buf[0] != 'GBFR') return BAD_TYPE;
+
+    const size_t numFds  = static_cast<size_t>(buf[8]);
+    const size_t numInts = static_cast<size_t>(buf[9]);
+
+    // Limit the maxNumber to be relatively small. The number of fds or ints
+    // should not come close to this number, and the number itself was simply
+    // chosen to be high enough to not cause issues and low enough to prevent
+    // overflow problems.
+    const size_t maxNumber = 4096;
+    if (numFds >= maxNumber || numInts >= (maxNumber - 10)) {
+        width = height = stride = format = usage = 0;
+        handle = NULL;
+        ALOGE("unflatten: numFds or numInts is too large: %d, %d",
+                numFds, numInts);
+        return BAD_VALUE;
+    }
+
+    const size_t sizeNeeded = (10 + numInts) * sizeof(int);
+    if (size < sizeNeeded) return NO_MEMORY;
+
+    size_t fdCountNeeded = numFds;
+    if (count < fdCountNeeded) return NO_MEMORY;
+
+    if (handle) {
+        // free previous handle if any
+        free_handle();
+    }
+
+    if (numFds || numInts) {
+        width  = buf[1];
+        height = buf[2];
+        stride = buf[3];
+        format = buf[4];
+        usage  = buf[5];
+        native_handle* h = native_handle_create(static_cast<int>(numFds), static_cast<int>(numInts));
+        if (!h) {
             width = height = stride = format = usage = 0;
             handle = NULL;
-            ALOGE("unflatten: numFds or numInts is too large: %zd, %zd",
-                  numFds, numInts);
-            return BAD_VALUE;
+            ALOGE("unflatten: native_handle_create failed");
+            return NO_MEMORY;
         }
-        
-        const size_t sizeNeeded = (8 + numInts) * sizeof(int);
-        if (size < sizeNeeded) return NO_MEMORY;
-        
-        size_t fdCountNeeded = numFds;
-        if (count < fdCountNeeded) return NO_MEMORY;
-        
-        if (handle) {
-            // free previous handle if any
-            free_handle();
-        }
-        
-        if (numFds || numInts) {
-            width  = buf[1];
-            height = buf[2];
-            stride = buf[3];
-            format = buf[4];
-            usage  = buf[5];
-            native_handle* h = native_handle_create(
-                                                    static_cast<int>(numFds), static_cast<int>(numInts));
-            if (!h) {
-                width = height = stride = format = usage = 0;
-                handle = NULL;
-                ALOGE("unflatten: native_handle_create failed");
-                return NO_MEMORY;
-            }
-            memcpy(h->data, fds, numFds * sizeof(int));
-            memcpy(h->data + numFds, &buf[8], numInts * sizeof(int));
-            handle = h;
-        } else {
+        memcpy(h->data,          fds,     numFds*sizeof(int));
+        memcpy(h->data + numFds, &buf[10], numInts*sizeof(int));
+        handle = h;
+    } else {
+        width = height = stride = format = usage = 0;
+        handle = NULL;
+    }
+
+    mId = static_cast<uint64_t>(buf[6]) << 32;
+    mId |= static_cast<uint32_t>(buf[7]);
+
+    mOwner = ownHandle;
+
+    if (handle != 0) {
+        status_t err = mBufferMapper.registerBuffer(handle);
+        if (err != NO_ERROR) {
             width = height = stride = format = usage = 0;
             handle = NULL;
+            ALOGE("unflatten: registerBuffer failed: %s (%d)",
+                    strerror(-err), err);
+            return err;
         }
-        
-        mOwner = ownHandle;
-        
-        if (handle != 0) {
-            status_t err = mBufferMapper.registerBuffer(handle);
-            if (err != NO_ERROR) {
-                width = height = stride = format = usage = 0;
-                handle = NULL;
-                ALOGE("unflatten: registerBuffer failed: %s (%d)",
-                      strerror(-err), err);
-                return err;
-            }
-        }
-        
-        buffer = static_cast<void const*>(static_cast<int const*>(buffer) + sizeNeeded);
-        size -= sizeNeeded;
-        fds += numFds;
-        count -= numFds;
-        
-        return NO_ERROR;
     }
+
+    buffer = static_cast<void const*>(static_cast<int const*>(buffer) + sizeNeeded);
+    size -= sizeNeeded;
+    fds += numFds;
+    count -= numFds;
+
+    return NO_ERROR;
+}
 
 // ---------------------------------------------------------------------------
 
